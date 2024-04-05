@@ -2,6 +2,7 @@
 header-includes:
  - \usepackage{fvextra}
  - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+ - \usepackage[margin=1cm]{geometry}
 ---
 
 # Sztuczna inteligencja - lista 1
@@ -691,7 +692,7 @@ dla przystanku początkowego Młodych Techników i przystanków pomiędzy
  Dubois, Plac Grunwaldzki, Rondo, Wrocławski Park Przemysłowy
 
 ```
-cargo run --release -- tabu "młodych techników" "blabla" 
+cargo run --release -- tabu "młodych techników"
 12:00 t "dubois, pl. grunwaldzki, rondo, wrocławski park przemysłowy"
 [usunięto część linii]
 Astar start
@@ -736,4 +737,86 @@ Route line changes: 11
 
 Algorytmy działają dosyć powoli, dlatego stworzyłem flamegraph aby zobaczyć, która funkcja jest najbardziej kosztowna.
 Okazało się, że znajdywanie krawędzi łączących 2 wierzchołki (graph.edges_connecting) zajmuje zdecydowaną większość czasu trwania programu.
-Zmiana biblioteki do grafów, lub napisanie własnej wymagałoby restrukturyzacji znaczącej części programu, dlatego porzuciłem próbę optymalizacji.
+Zmiana biblioteki do grafów, lub napisanie własnej wymagałoby restrukturyzacji znaczącej części programu.
+Zamiast tego, postanowiłem zastosować bibliotekę Rayon do wprowadzenia wielowątkowości do funkcji tabu_search.
+
+Zmieniony kod w tabu_search:
+
+```rust
+let tabu_list: Mutex<VecDeque<Vec<BusStop>>> = Mutex::new(VecDeque::new());
+tabu_list.lock().unwrap().push_back(best_solution.path.clone());
+
+// Main loop of the algorithm.
+for _ in 0..max_iterations {
+    let neighbours = generate_neighbour(&best_solution, start_stop.clone());
+    let best_neighbour_cost = Mutex::new(u16::MAX);
+    let best_neighbour = Mutex::new(None);
+
+    neighbours.into_par_iter().for_each(|neighbour|{
+        let neighbour_path = neighbour.path.clone();
+        if !tabu_list.lock().unwrap().contains(&neighbour_path) {
+            let mut neighbour = neighbour;
+            calculate_cost_for_solution(
+                &mut neighbour,
+                graph,
+                all_stops,
+                time_at_start,
+                limit_line_changes,
+            );
+            tabu_list.lock().unwrap().push_back(neighbour_path);
+
+            if best_neighbour_cost.lock().unwrap().gt(&neighbour.cost) {
+                let _ = best_neighbour.lock().unwrap().insert(neighbour.clone());
+                best_neighbour_cost.lock().unwrap().clone_from(&neighbour.cost);
+            }
+        }
+    });
+    let locked_best_neighbour = best_neighbour.lock().unwrap();
+    if  locked_best_neighbour.is_some() {
+        if <std::option::Option<Solution> as Clone>::clone(&locked_best_neighbour).unwrap().cost < best_solution.cost {
+            best_solution = <std::option::Option<Solution> as Clone>::clone(&locked_best_neighbour).unwrap();
+        }
+    }
+    if let Some(max_tabu_size) = max_tabu_size {
+        if tabu_list.lock().unwrap().len() > (max_tabu_size as usize) + stations_list.len() {
+            tabu_list.lock().unwrap().pop_front();
+        }
+    }
+}
+```
+
+Jak widać, wielowątkowy iterator zastosowałem tylko na wewnętrznej pętli sprawdzającej sąsiednie rozwiązania.
+Główną modyfikacją w kodzie było opakowanie niektórych zmiennych w mutexy.
+
+Ten sam zestaw argumentów po wprowadzeniu wielowątkowości:
+
+```
+cargo run --release -- tabu "młodych techników"
+12:00 t "dubois, pl. grunwaldzki, rondo, wrocławski park przemysłowy"
+[usunięto część linii]
+Astar start
+Size of Q set: 939
+Found stop b in Q set, breaking loop
+900 nodes in Q remaining
+Found stop b in Q set, breaking loop
+Cost: 786
+Tabu finished, took 36443ms
+
+Młodych Techników -> [MPK Tramwaje] [22] pl. Strzegomski (Muzeum Współczesne) (12:00-12:01) -> 
+[13] Dolmed (12:06-12:08) -> Śrubowa (12:08-12:09) -> Wrocławski Park Przemysłowy (12:09-12:10) ->
+[MPK Autobusy] [132] Śrubowa (12:12-12:13) -> [MPK Tramwaje] [23] Smolecka (12:14-12:15) -> 
+Dworzec Świebodzki (12:15-12:17) -> pl. Orląt Lwowskich (12:17-12:19) -> 
+[MPK Autobusy] [127] Tęczowa (12:20-12:21) -> Grabiszyńska (12:21-12:23) -> Zaporoska (12:23-12:25) ->
+[126] Rondo (12:25-12:27) -> [MPK Tramwaje] [17] Wielka (12:27-12:29) -> 
+[20] Zaolziańska (12:29-12:30) -> Arkady (Capitol) (12:30-12:33) -> 
+[MPK Autobusy] [D] GALERIA DOMINIKAŃSKA (12:35-12:40) -> Urząd Wojewódzki (Impart) (12:40-12:43) ->
+[MPK Tramwaje] [4] most Grunwaldzki (12:43-12:45) -> PL. GRUNWALDZKI (12:45-12:47) -> 
+[19] Piastowska (12:47-12:49) -> Górnickiego (12:49-12:51) -> Ogród Botaniczny (12:51-12:53) ->
+pl. Bema (12:53-12:55) -> Dubois (12:55-12:57) -> Pomorska (12:57-12:59) ->
+[MPK Autobusy] [142] Mosty Pomorskie (12:59-13:00) -> Rynek (13:00-13:02) ->
+PL. JANA PAWŁA II (13:02-13:04) -> Młodych Techników (13:04-13:06)
+Full route time: 66 minutes
+Route line changes: 11
+```
+
+Na 12-wątkowym procesorze osiągnięto ~4-krotne przyspieszenie wprowadzając niewiele zmian w kodzie źródłowym.

@@ -714,14 +714,14 @@ fn tabu_search(
         time_at_start,
         limit_line_changes,
     );
-    let mut tabu_list: Mutex<VecDeque<Vec<BusStop>>> = Mutex::new(VecDeque::new());
+    let tabu_list: Mutex<VecDeque<Vec<BusStop>>> = Mutex::new(VecDeque::new());
     tabu_list.lock().unwrap().push_back(best_solution.path.clone());
 
     // Main loop of the algorithm.
     for _ in 0..max_iterations {
         let neighbours = generate_neighbour(&best_solution, start_stop.clone());
-        let mut best_neighbour_cost = Mutex::new(u16::MAX);
-        let mut best_neighbour = Mutex::new(None);
+        let best_neighbour_cost = Mutex::new(u16::MAX);
+        let best_neighbour = Mutex::new(None);
 
         neighbours.into_par_iter().for_each(|neighbour|{
             let neighbour_path = neighbour.path.clone();
@@ -737,7 +737,7 @@ fn tabu_search(
                 tabu_list.lock().unwrap().push_back(neighbour_path);
 
                 if best_neighbour_cost.lock().unwrap().gt(&neighbour.cost) {
-                    best_neighbour.lock().unwrap().insert(neighbour.clone());
+                    let _ = best_neighbour.lock().unwrap().insert(neighbour.clone());
                     best_neighbour_cost.lock().unwrap().clone_from(&neighbour.cost);
                 }
             }
