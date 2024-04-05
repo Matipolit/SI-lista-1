@@ -1,3 +1,9 @@
+---
+header-includes:
+ - \usepackage{fvextra}
+ - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+---
+
 # Sztuczna inteligencja - lista 1
 
 ### Mateusz Polito 266581
@@ -467,7 +473,8 @@ fn astar(
 
     //return the path in a nice format
     return generate_path(path, graph, distances);
-}```
+}
+```
 
 Działanie algorytmu A* dla trasy Piastowska -> FAT o godzinie 12:00 i minimalizacji czasu:
 
@@ -507,4 +514,226 @@ Full route time: 101 minutes
 Route line changes: 2
 ```
 
+## 4 Przeszukiwanie Tabu
 
+Implementacja algorytmu przeszukiwania Tabu z opcjonalnym maksymalnym rozmiarem listy (max_tabu_size)
+
+```rust
+fn tabu_search(
+    graph: &Graph<BusStop, BusRoute>,
+    all_stops: &HashMap<NodeIndex, BusStop>,
+    start_stop: BusStop,
+    stations_list: Vec<BusStop>,
+    time_at_start: MyTime,
+    limit_line_changes: bool,
+    max_iterations: usize,
+    max_tabu_size: Option<u32>,
+) -> Path {
+    struct Solution {
+        path: Vec<BusStop>,
+        cost: u16,
+        full_path: Path,
+    }
+
+    impl Solution {
+        fn new(path: Vec<BusStop>, cost: u16, full_path: Option<Path>) -> Self {
+            Solution {
+                path,
+                cost,
+                full_path: full_path.unwrap_or_default(),
+            }
+        }
+
+        fn clone(&self) -> Solution {
+            Solution {
+                path: self.path.clone(),
+                cost: self.cost,
+                full_path: self.full_path.clone(),
+            }
+        }
+    }
+
+    // calculate the number of changes in a path.
+    fn get_number_of_changes(path: &Path) -> u16 {
+        let mut number_of_changes = 0;
+        let mut curr_line: Option<String> = None;
+        path.iter().for_each(|(_, route_opt)| {
+            if let Some(route) = route_opt {
+                if let Some(line) = curr_line.clone() {
+                    if line != route.line {
+                        number_of_changes += 1;
+                    }
+                    curr_line = Some(route.line.clone());
+                } else {
+                    curr_line = Some(route.line.clone());
+                }
+            }
+        });
+        number_of_changes
+    }
+
+    // generate neighbors for a given solution.
+    fn generate_neighbour(solution: &Solution, start_stop: BusStop) -> Vec<Solution> {
+        let mut neighbours = Vec::new();
+        for i in 0..solution.path.len() - 1 {
+            for j in i + 1..solution.path.len() - 2 {
+                let mut new_path = solution.path.clone();
+                new_path.remove(0);
+                new_path.pop();
+                new_path.swap(i, j);
+                new_path.insert(0, start_stop.clone());
+                new_path.push(start_stop.clone());
+                neighbours.push(Solution::new(new_path, u16::MAX, None));
+            }
+        }
+        neighbours
+    }
+
+    // calculate the cost for a solution.
+    fn calculate_cost_for_solution(
+        solution: &mut Solution,
+        graph: &Graph<BusStop, BusRoute>,
+        all_stops: &HashMap<NodeIndex, BusStop>,
+        time_at_start: MyTime,
+        limit_line_changes: bool,
+    ) {
+        solution.full_path.clear();
+
+        let mut current_time = time_at_start;
+
+        for i in 0..solution.path.len() - 1 {
+            let stop_a = solution.path[i].clone();
+            let stop_b = solution.path[i + 1].clone();
+
+            let astar_path = astar(
+                stop_a,
+                stop_b,
+                current_time,
+                graph,
+                all_stops,
+                limit_line_changes,
+            );
+            current_time = astar_path.last().cloned().unwrap().1.unwrap().arrival_time;
+            let sub_path_to_station = if i != 0 {
+                &astar_path[1..]
+            } else {
+                &astar_path
+            };
+
+            solution.full_path.extend_from_slice(sub_path_to_station);
+        }
+        // Set the total cost of the solution
+        solution.cost = current_time.to_minutes();
+        if limit_line_changes {
+            solution.cost += 30 * get_number_of_changes(&solution.full_path);
+        }
+    }
+
+    let ran_gen = &mut rand::thread_rng();
+    let mut random_path = stations_list.clone();
+    random_path.shuffle(ran_gen);
+    random_path.insert(0, start_stop.clone());
+    random_path.push(start_stop.clone());
+    let mut best_solution = Solution::new(random_path, u16::MAX, None);
+    calculate_cost_for_solution(
+        &mut best_solution,
+        graph,
+        all_stops,
+        time_at_start,
+        limit_line_changes,
+    );
+    let mut tabu_list: VecDeque<Vec<BusStop>> = VecDeque::new();
+    tabu_list.push_back(best_solution.path.clone());
+
+    // Main loop of the algorithm.
+    for _ in 0..max_iterations {
+        let neighbours = generate_neighbour(&best_solution, start_stop.clone());
+        let mut best_neighbour_cost = u16::MAX;
+        let mut best_neighbour = None;
+
+        for neighbour in neighbours {
+            let neighbour_path = neighbour.path.clone();
+            if !tabu_list.contains(&neighbour_path) {
+                let mut neighbour = neighbour;
+                calculate_cost_for_solution(
+                    &mut neighbour,
+                    graph,
+                    all_stops,
+                    time_at_start,
+                    limit_line_changes,
+                );
+                tabu_list.push_back(neighbour_path);
+
+                if neighbour.cost < best_neighbour_cost {
+                    best_neighbour = Some(neighbour.clone());
+                    best_neighbour_cost = neighbour.cost;
+                }
+            }
+        }
+
+        if let Some(neighbour) = best_neighbour {
+            if neighbour.cost < best_solution.cost {
+                best_solution = neighbour;
+            }
+        }
+        if let Some(max_tabu_size) = max_tabu_size {
+            if tabu_list.len() > (max_tabu_size as usize) + stations_list.len() {
+                tabu_list.pop_front();
+            }
+        }
+    }
+    println!("Cost: {}", best_solution.cost);
+    best_solution.full_path
+}
+```
+
+dla przystanku początkowego Młodych Techników i przystanków pomiędzy
+ Dubois, Plac Grunwaldzki, Rondo, Wrocławski Park Przemysłowy
+
+```
+cargo run --release -- tabu "młodych techników" "blabla" 
+12:00 t "dubois, pl. grunwaldzki, rondo, wrocławski park przemysłowy"
+[usunięto część linii]
+Astar start
+Size of Q set: 939
+900 nodes in Q remaining
+Found stop b in Q set, breaking loop
+Astar start
+Size of Q set: 939
+900 nodes in Q remaining
+Found stop b in Q set, breaking loop
+Astar start
+Size of Q set: 939
+900 nodes in Q remaining
+Found stop b in Q set, breaking loop
+Cost: 789
+It took 125741ms
+
+Młodych Techników -> [MPK Tramwaje] [10] PL. JANA PAWŁA II (12:00-12:02) 
+-> Rynek (12:02-12:05) -> Zamkowa (12:05-12:06) -> 
+Świdnicka (12:06-12:08) -> GALERIA DOMINIKAŃSKA (12:08-12:10) 
+-> [MPK Autobusy] [D] Urząd Wojewódzki (Impart) (12:10-12:13) -> 
+most Grunwaldzki (12:13-12:14) -> PL. GRUNWALDZKI (12:14-12:16)
+ -> [MPK Tramwaje] [19] Piastowska (12:16-12:18) -> 
+Górnickiego (12:18-12:20) -> Ogród Botaniczny (12:20-12:22) 
+-> pl. Bema (12:22-12:24) -> Dubois (12:24-12:26) -> 
+Pomorska (12:26-12:28) -> Kępa Mieszczańska (12:28-12:31) 
+-> [14] PL. JANA PAWŁA II (12:31-12:33) -> pl. Orląt Lwowskich (12:33-12:35) 
+-> [MPK Autobusy] [106] Renoma (12:35-12:37) ->
+ [MPK Tramwaje] [7] Arkady (Capitol) (12:38-12:40) -> [18] Zaolziańska (12:40-12:42) 
+-> Wielka (12:42-12:43) -> Rondo (12:43-12:44) -> 
+[MPK Autobusy] [D] Arkady (Capitol) (12:44-12:50) ->
+ [MPK Tramwaje] [6] Renoma (12:50-12:52) 
+-> [MPK Autobusy] [148] pl. Orląt Lwowskich (12:52-12:55) ->
+ Dworzec Świebodzki (12:55-12:57) -> Smolecka (12:57-12:59) -> 
+Śrubowa (12:59-13:00) -> Wrocławski Park Przemysłowy (13:00-13:01) ->
+ [149] Śrubowa (13:02-13:04) -> 
+[142] pl. Strzegomski (Muzeum Współczesne) (13:05-13:08) ->
+ Młodych Techników (13:08-13:09)
+Full route time: 69 minutes
+Route line changes: 11
+```
+
+Algorytmy działają dosyć powoli, dlatego stworzyłem flamegraph aby zobaczyć, która funkcja jest najbardziej kosztowna.
+Okazało się, że znajdywanie krawędzi łączących 2 wierzchołki (graph.edges_connecting) zajmuje zdecydowaną większość czasu trwania programu.
+Zmiana biblioteki do grafów, lub napisanie własnej wymagałoby restrukturyzacji znaczącej części programu, dlatego porzuciłem próbę optymalizacji.

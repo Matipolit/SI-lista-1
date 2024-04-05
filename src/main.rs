@@ -1,4 +1,4 @@
-use rayon::prelude::*;
+use rayon::{prelude::*, vec};
 use serde::Deserializer;
 use std::collections::{HashMap, VecDeque};
 use std::ops::Deref;
@@ -593,7 +593,7 @@ fn astar(
 fn tabu_search(
     graph: &Graph<BusStop, BusRoute>,
     all_stops: &HashMap<NodeIndex, BusStop>,
-    start: BusStop,
+    start_stop: BusStop,
     stations_list: Vec<BusStop>,
     time_at_start: MyTime,
     limit_line_changes: bool,
@@ -644,12 +644,16 @@ fn tabu_search(
     }
 
     // generate neighbors for a given solution.
-    fn generate_neighbour(solution: &Solution) -> Vec<Solution> {
+    fn generate_neighbour(solution: &Solution, start_stop: BusStop) -> Vec<Solution> {
         let mut neighbours = Vec::new();
         for i in 0..solution.path.len() - 1 {
             for j in i + 1..solution.path.len() - 2 {
                 let mut new_path = solution.path.clone();
+                new_path.remove(0);
+                new_path.pop();
                 new_path.swap(i, j);
+                new_path.insert(0, start_stop.clone());
+                new_path.push(start_stop.clone());
                 neighbours.push(Solution::new(new_path, u16::MAX, None));
             }
         }
@@ -699,8 +703,8 @@ fn tabu_search(
     let ran_gen = &mut rand::thread_rng();
     let mut random_path = stations_list.clone();
     random_path.shuffle(ran_gen);
-    random_path.insert(0, start.clone());
-    random_path.push(start);
+    random_path.insert(0, start_stop.clone());
+    random_path.push(start_stop.clone());
     let mut best_solution = Solution::new(random_path, u16::MAX, None);
     calculate_cost_for_solution(
         &mut best_solution,
@@ -714,7 +718,7 @@ fn tabu_search(
 
     // Main loop of the algorithm.
     for _ in 0..max_iterations {
-        let neighbours = generate_neighbour(&best_solution);
+        let neighbours = generate_neighbour(&best_solution, start_stop.clone());
         let mut best_neighbour_cost = u16::MAX;
         let mut best_neighbour = None;
 
@@ -814,22 +818,29 @@ fn print_path(path: Path) {
 fn main() {
     let args = env::args().collect::<Vec<String>>();
     if args.len() < 5 {
-        println!("Usage: cargo run -- <function> <stop_a> <stop_b> <time> <criterion [t, p] - only for astar> <stop_list [bus stop names separated by ,] - only for tabu>");
+        println!("Usage: cargo run -- <function> <stop_a> <stop_b> <time> <criterion [t, p] - only for astar & tabu> <stop_list [bus stop names separated by ,] - only for tabu>");
         return;
     }
     let function = &args[1];
     let stop_a = &args[2];
-    let stop_b = &args[3];
+    let stop_b = if function.as_str() == "astar" || function.as_str() == "dijkstra" {
+        Some(&args[3])
+    } else {
+        None
+    };
+
     let time = &args[4];
-    let criterion = match function.as_str() {
-        "astar" => Some(&args[5]),
-        _ => None,
+    let criterion: Option<&String> = if function.as_str() == "astar" || function.as_str() == "tabu"
+    {
+        Some(&args[5])
+    } else {
+        None
     };
 
     let limit: Option<u32> = match function.as_str() {
         "tabu" => {
-            if args.len() > 6 {
-                Some(args[6].parse::<u32>().unwrap())
+            if args.len() > 7 {
+                Some(args[7].parse::<u32>().unwrap())
             } else {
                 None
             }
@@ -848,9 +859,22 @@ fn main() {
 
     println!("Unique bus stops count: {}", unique_stops.len());
 
+    let stop_a =
+        get_stop_by_name(&graph, stop_a).expect(format!("Stop {} not found", stop_a).as_str());
+    let stop_b: Option<BusStop> = if stop_b.is_some() {
+        Some(
+            get_stop_by_name(&graph, stop_b.unwrap())
+                .expect(format!("Stop {} not found", stop_b.unwrap()).as_str()),
+        )
+    } else {
+        None
+    };
+    println!("Stop a found: {:?}", &stop_a);
+    println!("Stop b found: {:?}", &stop_b);
+
     let stop_list: Option<Vec<BusStop>> = match function.as_str() {
         "tabu" => {
-            let split_str = &args[5].split(',');
+            let split_str = &args[6].split(',');
             let mut stop_list: Vec<BusStop> = Vec::new();
             for stop in split_str.clone() {
                 let bus_stop = get_stop_by_name(&graph, stop)
@@ -862,29 +886,17 @@ fn main() {
         _ => None,
     };
 
-    let stop_a =
-        get_stop_by_name(&graph, stop_a).expect(format!("Stop {} not found", stop_a).as_str());
-    let stop_b =
-        get_stop_by_name(&graph, stop_b).expect(format!("Stop {} not found", stop_b).as_str());
-    println!("Stop a found: {:?}", &stop_a);
-    println!("Stop b found: {:?}", &stop_b);
-
-    println!(
-        "Euclidean distance between a and b: {}",
-        (euclidean_distance(&stop_a.coords, &stop_b.coords))
-    );
-
     now = Instant::now();
     match function.as_str() {
         "dijkstra" => {
-            let path = dijkstra(stop_a, stop_b, time.into(), &graph, &unique_stops);
+            let path = dijkstra(stop_a, stop_b.unwrap(), time.into(), &graph, &unique_stops);
             println!("It took {}ms", now.elapsed().as_millis());
             print_path(path);
         }
         "astar" => {
             let path = astar(
                 stop_a,
-                stop_b,
+                stop_b.unwrap(),
                 time.into(),
                 &graph,
                 &unique_stops,
@@ -894,8 +906,7 @@ fn main() {
             print_path(path);
         }
         "tabu" => {
-            let mut unwrapped_list = stop_list.unwrap();
-            unwrapped_list.push(stop_b);
+            let unwrapped_list = stop_list.unwrap();
             let path = tabu_search(
                 &graph,
                 &unique_stops,
