@@ -591,11 +591,11 @@ fn astar(
 }
 
 fn tabu_search(
-    graph: &Graph<BusStop, BusRoute>,
-    all_stops: &HashMap<NodeIndex, BusStop>,
     start_stop: BusStop,
     stations_list: Vec<BusStop>,
     time_at_start: MyTime,
+    graph: &Graph<BusStop, BusRoute>,
+    all_stops: &HashMap<NodeIndex, BusStop>,
     limit_line_changes: bool,
     max_iterations: usize,
     max_tabu_size: Option<u32>,
@@ -817,110 +817,96 @@ fn print_path(path: Path) {
 
 fn main() {
     let args = env::args().collect::<Vec<String>>();
-    if args.len() < 5 {
-        println!("Usage: cargo run -- <function> <stop_a> <stop_b> <time> <criterion [t, p] - only for astar & tabu> <stop_list [bus stop names separated by ,] - only for tabu>");
+    if args.contains(&"help".to_owned()) || args.len() == 1 {
+        println!("Parameters: <function [dijkstra, astar, tabu]> + arguments for function:
+            dijkstra: <stop_a> <stop_b> <time>
+            astar: <stop_a> <stop_b> <time> <criterion [t, p]>
+            tabu: <stop_a> <time> <criterion [t, p]> <stop_list [bus stop names separated by commas]> <length_limit [optional]>");
         return;
     }
+
     let function = &args[1];
-    let stop_a = &args[2];
-    let stop_b = if function.as_str() == "astar" || function.as_str() == "dijkstra" {
-        Some(&args[3])
-    } else {
-        None
-    };
 
-    let time = &args[4];
-    let criterion: Option<&String> = if function.as_str() == "astar" || function.as_str() == "tabu"
-    {
-        Some(&args[5])
-    } else {
-        None
-    };
+    match function.as_str(){
+        "dijkstra" => {
+            if args.len() != 5 {
+                panic!("Wrong number of arguments for Dijkstra!\nCorrect arguments: <stop_a> <stop_b> <time>")
+            }
+            let stop_a_str = &args[2];
+            let stop_b_str = &args[3];
+            let time = MyTime::from(&args[4]);
 
-    let limit: Option<u32> = match function.as_str() {
+            let mut now = Instant::now();
+            let (unique_stops, graph) = read_records("connection_graph.csv".to_owned()).unwrap();
+            println!("Building graph took {}\n", now.elapsed().as_millis());
+
+            let stop_a = get_stop_by_name(&graph, &stop_a_str).expect(format!("Stop {} not found", stop_a_str).as_str());
+            let stop_b = get_stop_by_name(&graph, &stop_b_str).expect(format!("Stop {} not found", stop_b_str).as_str());
+
+            now = Instant::now();
+            let path = dijkstra(stop_a, stop_b, time, &graph, &unique_stops);
+            println!("Dijkstra finished, took {}ms", now.elapsed().as_millis());
+            print_path(path);
+
+        }
+        "astar" => {
+            if args.len() != 6 {
+                panic!("Wrong number of arguments for Astar!\nCorrect arguments: <stop_a> <stop_b> <time> <criterion [t, p]>")
+            }
+            let stop_a_str = &args[2];
+            let stop_b_str = &args[3];
+            let time = MyTime::from(&args[4]);
+            let limit_line_changes = args[5] == "p";
+
+            let mut now = Instant::now();
+            let (unique_stops, graph) = read_records("connection_graph.csv".to_owned()).unwrap();
+            println!("Building graph took {}\n", now.elapsed().as_millis());
+
+            let stop_a = get_stop_by_name(&graph, &stop_a_str).expect(format!("Stop {} not found", stop_a_str).as_str());
+            let stop_b = get_stop_by_name(&graph, &stop_b_str).expect(format!("Stop {} not found", stop_b_str).as_str());
+
+            now = Instant::now();
+            let path = astar(stop_a, stop_b, time, &graph, &unique_stops, limit_line_changes);
+            println!("Astar finished, took {}ms", now.elapsed().as_millis());
+            print_path(path);
+        }
         "tabu" => {
-            if args.len() > 7 {
+            if args.len() < 6 {
+                panic!("Wrong number of arguments for Tabu!\nCorrect arguments: <stop_a> <time> <criterion [t, p]> <stop_list [bus stop names separated by commas]> <length_limit [optional]>")
+            }
+            let stop_a_str = &args[2];
+            let time = MyTime::from(&args[3]);
+            let limit_line_changes = args[4] == "p";
+            let stop_list_str = &args[5];
+            let limit = if args.len() > 6 {
                 Some(args[7].parse::<u32>().unwrap())
             } else {
                 None
-            }
-        }
-        _ => None,
-    };
+            };
+            let mut now = Instant::now();
+            let (unique_stops, graph) = read_records("connection_graph.csv".to_owned()).unwrap();
+            println!("Building graph took {}\n", now.elapsed().as_millis());
 
-    let mut now = Instant::now();
-    let (unique_stops, graph) = read_records("connection_graph.csv".to_owned()).unwrap();
-    println!(
-        "Graph stats:\nNode count: {}\nEdge count: {}",
-        graph.node_count(),
-        graph.edge_count()
-    );
-    println!("Building graph took {}", now.elapsed().as_millis());
+            let stop_a = get_stop_by_name(&graph, &stop_a_str).expect(format!("Stop {} not found", stop_a_str).as_str());
 
-    println!("Unique bus stops count: {}", unique_stops.len());
+            let stop_list = {
+                let split_str = stop_list_str.split(',');
+                let mut stop_list: Vec<BusStop> = Vec::new();
+                for stop in split_str.clone() {
+                    let bus_stop = get_stop_by_name(&graph, stop)
+                        .expect(format!("Stop {} not found", stop).as_str());
+                    stop_list.push(bus_stop);
+                }
+                stop_list
+            };
 
-    let stop_a =
-        get_stop_by_name(&graph, stop_a).expect(format!("Stop {} not found", stop_a).as_str());
-    let stop_b: Option<BusStop> = if stop_b.is_some() {
-        Some(
-            get_stop_by_name(&graph, stop_b.unwrap())
-                .expect(format!("Stop {} not found", stop_b.unwrap()).as_str()),
-        )
-    } else {
-        None
-    };
-    println!("Stop a found: {:?}", &stop_a);
-    println!("Stop b found: {:?}", &stop_b);
-
-    let stop_list: Option<Vec<BusStop>> = match function.as_str() {
-        "tabu" => {
-            let split_str = &args[6].split(',');
-            let mut stop_list: Vec<BusStop> = Vec::new();
-            for stop in split_str.clone() {
-                let bus_stop = get_stop_by_name(&graph, stop)
-                    .expect(format!("Stop {} not found", stop).as_str());
-                stop_list.push(bus_stop);
-            }
-            Some(stop_list)
-        }
-        _ => None,
-    };
-
-    now = Instant::now();
-    match function.as_str() {
-        "dijkstra" => {
-            let path = dijkstra(stop_a, stop_b.unwrap(), time.into(), &graph, &unique_stops);
-            println!("It took {}ms", now.elapsed().as_millis());
+            now = Instant::now();
+            let path = tabu_search(stop_a, stop_list, time, &graph, &unique_stops, limit_line_changes, 100, limit);
+            println!("Tabu finished, took {}ms", now.elapsed().as_millis());
             print_path(path);
+
         }
-        "astar" => {
-            let path = astar(
-                stop_a,
-                stop_b.unwrap(),
-                time.into(),
-                &graph,
-                &unique_stops,
-                criterion.unwrap() == "p",
-            );
-            println!("It took {}ms", now.elapsed().as_millis());
-            print_path(path);
-        }
-        "tabu" => {
-            let unwrapped_list = stop_list.unwrap();
-            let path = tabu_search(
-                &graph,
-                &unique_stops,
-                stop_a,
-                unwrapped_list,
-                time.into(),
-                false,
-                100,
-                limit,
-            );
-            println!("It took {}ms", now.elapsed().as_millis());
-            print_path(path);
-        }
-        _ => println!("Function not found"),
+        other => panic!("Function {other} not found!")
     }
 }
 
