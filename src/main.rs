@@ -600,6 +600,7 @@ fn tabu_search(
     max_iterations: usize,
     max_tabu_size: Option<u32>,
 ) -> Path {
+    #[derive(Clone)]
     struct Solution {
         path: Vec<BusStop>,
         cost: u16,
@@ -713,18 +714,18 @@ fn tabu_search(
         time_at_start,
         limit_line_changes,
     );
-    let mut tabu_list: VecDeque<Vec<BusStop>> = VecDeque::new();
-    tabu_list.push_back(best_solution.path.clone());
+    let mut tabu_list: Mutex<VecDeque<Vec<BusStop>>> = Mutex::new(VecDeque::new());
+    tabu_list.lock().unwrap().push_back(best_solution.path.clone());
 
     // Main loop of the algorithm.
     for _ in 0..max_iterations {
         let neighbours = generate_neighbour(&best_solution, start_stop.clone());
-        let mut best_neighbour_cost = u16::MAX;
-        let mut best_neighbour = None;
+        let mut best_neighbour_cost = Mutex::new(u16::MAX);
+        let mut best_neighbour = Mutex::new(None);
 
-        for neighbour in neighbours {
+        neighbours.into_par_iter().for_each(|neighbour|{
             let neighbour_path = neighbour.path.clone();
-            if !tabu_list.contains(&neighbour_path) {
+            if !tabu_list.lock().unwrap().contains(&neighbour_path) {
                 let mut neighbour = neighbour;
                 calculate_cost_for_solution(
                     &mut neighbour,
@@ -733,23 +734,23 @@ fn tabu_search(
                     time_at_start,
                     limit_line_changes,
                 );
-                tabu_list.push_back(neighbour_path);
+                tabu_list.lock().unwrap().push_back(neighbour_path);
 
-                if neighbour.cost < best_neighbour_cost {
-                    best_neighbour = Some(neighbour.clone());
-                    best_neighbour_cost = neighbour.cost;
+                if best_neighbour_cost.lock().unwrap().gt(&neighbour.cost) {
+                    best_neighbour.lock().unwrap().insert(neighbour.clone());
+                    best_neighbour_cost.lock().unwrap().clone_from(&neighbour.cost);
                 }
             }
-        }
-
-        if let Some(neighbour) = best_neighbour {
-            if neighbour.cost < best_solution.cost {
-                best_solution = neighbour;
+        });
+        let locked_best_neighbour = best_neighbour.lock().unwrap();
+        if  locked_best_neighbour.is_some() {
+            if <std::option::Option<Solution> as Clone>::clone(&locked_best_neighbour).unwrap().cost < best_solution.cost {
+                best_solution = <std::option::Option<Solution> as Clone>::clone(&locked_best_neighbour).unwrap();
             }
         }
         if let Some(max_tabu_size) = max_tabu_size {
-            if tabu_list.len() > (max_tabu_size as usize) + stations_list.len() {
-                tabu_list.pop_front();
+            if tabu_list.lock().unwrap().len() > (max_tabu_size as usize) + stations_list.len() {
+                tabu_list.lock().unwrap().pop_front();
             }
         }
     }
@@ -879,7 +880,7 @@ fn main() {
             let limit_line_changes = args[4] == "p";
             let stop_list_str = &args[5];
             let limit = if args.len() > 6 {
-                Some(args[7].parse::<u32>().unwrap())
+                Some(args[6].parse::<u32>().unwrap())
             } else {
                 None
             };
@@ -901,7 +902,7 @@ fn main() {
             };
 
             now = Instant::now();
-            let path = tabu_search(stop_a, stop_list, time, &graph, &unique_stops, limit_line_changes, 100, limit);
+            let path = tabu_search(stop_a, stop_list, time, &graph, &unique_stops, limit_line_changes, 50, limit);
             println!("Tabu finished, took {}ms", now.elapsed().as_millis());
             print_path(path);
 
